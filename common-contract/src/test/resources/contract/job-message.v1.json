@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "jobId": "8f3c2a1e-7b4d-4f6a-9c2e-1d5b7a9e3f10",
+  "userId": 41,
+  "sectionId": 3,
+  "problemId": 12,
+  "langId": "c",
+  "code": "#include <stdio.h>\nint main(void){int a,b;scanf(\"%d %d\",&a,&b);printf(\"%d\\n\",a+b);return 0;}\n",
+  "timeLimitSec": 1.0,
+  "memoryLimitMb": 256,
+  "compareArgs": "",
+  "problemHash": "a1b2c3",
+  "mode": "NORMAL",
+  "enqueuedAt": 1760936591123,
+  "futureField": "v1 consumers must ignore unknown fields"
+}
