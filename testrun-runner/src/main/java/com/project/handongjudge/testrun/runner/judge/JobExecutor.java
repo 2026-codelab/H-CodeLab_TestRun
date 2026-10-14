@@ -83,7 +83,11 @@ public class JobExecutor {
 
         Map<String, String> env = JudgeEnv.forJob(
                 JudgeEnv.base(properties.getJudgehostRoot(), slot.getRunuser(), recipe.getLimits()), job.getMemoryLimitMb());
-        int rc = ProcessRunner.run(List.of(
+        boolean direct = properties.isDirectJudge();
+        int rc = direct
+                ? DirectJudge.compile(workdir, sourceName, language.getCompile().getRunPath(), slot.getCpu(),
+                        slot.getRunuser(), env, remaining(deadline))
+                : ProcessRunner.run(List.of(
                         slot.getLibJudgeDir().resolve("compile.sh").toString(), "-n", String.valueOf(slot.getCpu()),
                         language.getCompile().getRunPath().toString(), workdir.toString(), sourceName),
                 workdir, env, workdir.resolve("compile.stdout"), remaining(deadline));
@@ -119,14 +123,21 @@ public class JobExecutor {
             Path passdir = workdir.resolve(String.format("testcase%05d", tc.rank())).resolve("1");
             Path execdir = passdir.resolve("execdir");
             Files.createDirectories(execdir);
-            linkProgram(workdir.resolve("compile"), execdir);
-
-            rc = ProcessRunner.run(List.of(
-                            slot.getLibJudgeDir().resolve("testcase_run.sh").toString(), "-n", String.valueOf(slot.getCpu()),
-                            tc.input().toString(), tc.answer().toString(), timeLimit, passdir.toString(),
-                            recipe.getRun().getRunPath().toString(), recipe.getCompare().getRunPath().toString(),
-                            job.getCompareArgs() == null ? "" : job.getCompareArgs()),
-                    workdir, env, passdir.getParent().resolve("run.stdout"), remaining(deadline));
+            if (direct) {
+                linkProgramDirect(workdir.resolve("compile"), execdir);
+                String[] limits = timeLimit.split(",");
+                rc = DirectJudge.runTestcase(passdir, tc.input(), tc.answer(), limits[0], limits[1],
+                        recipe.getRun().getRunPath(), recipe.getCompare().getRunPath(), job.getCompareArgs(),
+                        slot.getCpu(), slot.getRunuser(), env, deadline);
+            } else {
+                linkProgram(workdir.resolve("compile"), execdir);
+                rc = ProcessRunner.run(List.of(
+                                slot.getLibJudgeDir().resolve("testcase_run.sh").toString(), "-n", String.valueOf(slot.getCpu()),
+                                tc.input().toString(), tc.answer().toString(), timeLimit, passdir.toString(),
+                                recipe.getRun().getRunPath().toString(), recipe.getCompare().getRunPath().toString(),
+                                job.getCompareArgs() == null ? "" : job.getCompareArgs()),
+                        workdir, env, passdir.getParent().resolve("run.stdout"), remaining(deadline));
+            }
             if (rc == ProcessRunner.TIMED_OUT) {
                 return error(summary, "JOB_TIMEOUT", "testcase " + tc.rank() + " exceeded job timeout");
             }
@@ -263,6 +274,22 @@ public class JobExecutor {
         int rc = ProcessRunner.run(command, compileDir, Map.of(), null, 30_000);
         if (rc != 0) {
             throw new IOException("could not link program into " + execdir);
+        }
+    }
+
+    /** cp -PRl과 같다 (파일은 하드링크, 심볼릭 링크는 그대로, 디렉토리는 재귀). 프로세스를 띄우지 않는다. */
+    private static void linkProgramDirect(Path compileDir, Path execdir) throws IOException {
+        try (Stream<Path> paths = Files.walk(compileDir)) {
+            for (Path src : paths.filter(p -> !p.equals(compileDir)).toList()) {
+                Path dst = execdir.resolve(compileDir.relativize(src).toString());
+                if (Files.isSymbolicLink(src)) {
+                    Files.createSymbolicLink(dst, Files.readSymbolicLink(src));
+                } else if (Files.isDirectory(src)) {
+                    Files.createDirectories(dst);
+                } else {
+                    Files.createLink(dst, src);
+                }
+            }
         }
     }
 
