@@ -87,6 +87,7 @@ docker run --rm -e GRADLE_USER_HOME=/cache -v hcodelab-testrun-gradle:/cache -v 
 
 ## 다음 단계
 
-- **3단계 backend 어댑터** (H-CodeLab_BE): `TestRunRouter`(기능 플래그·폴백), 이벤트 dispatcher(SSE 중계), 스트림 소유권 확인, 내부 API `/internal/testrun/problems/{id}/testcases`, `Problem.testcaseHash`
+- **3단계 backend 어댑터** (H-CodeLab_BE `feat/testrun-backend-adapter`): 기능 플래그·폴백, SSE 중계, 스트림 소유권 확인, 내부 테스트케이스 API — local-dev E2E 확인 완료, PR 예정
+  - 테스트케이스 해시는 `Problem.testcaseHash` 컬럼 대신 zip의 sha256을 매번 계산한다 (zip이 문제 조회 시 이미 메모리에 있어 비용이 작고, 컬럼 갱신 누락으로 인한 불일치가 없음)
 - **3.5단계** 통계 API (`/v1/stats/*`)
 - amd64 환경 재측정 (PoC 속도 게이트)
