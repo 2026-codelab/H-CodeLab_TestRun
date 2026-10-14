@@ -1,0 +1,5 @@
+rootProject.name = 'hcodelab-testrun'
+
+include 'common-contract'
+include 'testrun-service'
+include 'testrun-runner'

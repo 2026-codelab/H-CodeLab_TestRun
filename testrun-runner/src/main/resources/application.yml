@@ -1,0 +1,29 @@
+spring:
+  main:
+    web-application-type: none
+  application:
+    name: testrun-runner
+
+runner:
+  id: ${RUNNER_ID:${HOSTNAME:runner-local}}
+  slots: ${RUNNER_SLOTS:2}
+  cpus: ${RUNNER_CPUS:1,2}
+  runuser-base: ${RUNNER_RUNUSER_BASE:101}
+  job-timeout-sec: ${RUNNER_JOB_TIMEOUT_SEC:30}
+  max-queue-wait-sec: ${RUNNER_MAX_QUEUE_WAIT_SEC:60}
+  redis:
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    password: ${REDIS_PASSWORD:}
+  domserver:
+    base-url: ${DOMSERVER_BASEURL:http://domserver/}
+    user: ${DOMSERVER_USER:admin}
+    password: ${DOMSERVER_PASSWORD:}
+    password-file: ${DOMSERVER_PASSWORD_FILE:}
+  internal:
+    base-url: ${HCL_INTERNAL_BASEURL:http://backend:8080/}
+    token: ${HCL_INTERNAL_TOKEN:}
+
+logging:
+  level:
+    com.project.handongjudge.testrun: INFO

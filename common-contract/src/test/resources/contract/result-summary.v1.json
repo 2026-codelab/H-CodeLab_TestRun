@@ -1,0 +1,31 @@
+{
+  "v": 1,
+  "jobId": "8f3c2a1e-7b4d-4f6a-9c2e-1d5b7a9e3f10",
+  "userId": 41,
+  "sectionId": 3,
+  "problemId": 12,
+  "langId": "c",
+  "mode": "NORMAL",
+  "status": "DONE",
+  "verdict": "WA",
+  "errorCode": null,
+  "errorMessage": null,
+  "testcaseSource": "SAMPLE",
+  "tcTotal": 3,
+  "tcPassed": 1,
+  "firstFailRank": 2,
+  "maxRuntimeMs": 5,
+  "maxMemoryKb": 892,
+  "compileOutput": "",
+  "compileOutputTruncated": false,
+  "compileOutputBytes": 0,
+  "cases": [
+    { "rank": 1, "verdict": "AC", "runtimeMs": 5, "memoryKb": 892 },
+    { "rank": 2, "verdict": "WA", "runtimeMs": 4, "memoryKb": 888 }
+  ],
+  "runnerId": "runner-1",
+  "enqueuedAt": 1760936591123,
+  "dequeuedAt": 1760936591140,
+  "compiledAt": 1760936591290,
+  "finishedAt": 1760936591610
+}
