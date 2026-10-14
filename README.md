@@ -106,11 +106,26 @@ docker run --rm -e GRADLE_USER_HOME=/cache -v hcodelab-testrun-gradle:/cache -v 
 실제 실행·비교는 테스트케이스당 30ms이고, 나머지는 DOMjudge 셸 스크립트가 테스트케이스마다 띄우는 약 120개의 프로세스
 (grep·sed·sudo·runguard 등) 비용이다. 이 Mac은 amd64 이미지를 에뮬레이션해 프로세스 1개에 7.3ms(네이티브 arm64는 0.35ms)가 든다.
 
-줄이는 방법 (효과가 큰 순):
-1. **운영(amd64 네이티브)에서 재측정** — 프로세스 비용이 에뮬레이션의 1/20 수준이면 코드 변경 없이도 크게 줄어든다 (미측정)
-2. **`testcase_run.sh` 대신 runner가 runguard를 직접 호출** (설계 문서 2-6) — 같은 runguard·같은 비교 프로그램을 쓰므로 판정 일치성은 유지, 테스트케이스당 프로세스 약 120 → 약 4
-3. **테스트케이스 병렬 실행** — 슬롯 CPU 여러 개를 한 작업에 배정
-4. `compile.sh`도 2와 같은 방식으로 직접 호출
+### runguard 직접 호출 (DirectJudge, 기본값 `RUNNER_JUDGE_MODE=direct`)
+
+`compile.sh`·`testcase_run.sh`가 하던 일을 같은 runguard 옵션·같은 run/compare 실행파일·같은 결과 판정 순서로
+Java에서 직접 한다. 테스트케이스당 보조 프로세스가 약 120개 → 약 8개(run 스크립트, sudo·runguard ×2, chown)로 준다.
+`RUNNER_JUDGE_MODE=script`로 되돌릴 수 있다.
+
+| 결과 (학생 API, 5회 중앙값) | 기존 DOMjudge | 실행기 script | 실행기 **direct** |
+|---|---|---|---|
+| 정답 (3개) | 6.77초 | 4.22초 | **1.58초** |
+| 오답 (3개 모두 실행) | 6.76초 | 4.35초 | **1.54초** |
+| 컴파일 에러 | 3.74초 | 0.70초 | **0.35초** |
+
+단계별: 컴파일 0.92 → 0.53초 (gcc 자체 0.3초), 테스트케이스 1.13 → 0.33초.
+
+판정 일치성 (`scripts/parity.py`): C·C++·Java·Python, AC·WA·CE·TLE·RTE(segfault, 종료 코드, 메모리 초과)·OLE·NO·공백 차이(엄격 비교 포함)
+17개 사례에서 script와 direct의 테스트케이스별 판정·최종 판정·컴파일 메시지·diff 메시지가 **모두 같음 (불일치 0)**.
+
+남은 개선:
+1. **운영(amd64 네이티브)에서 재측정** — 남은 0.33초/테스트케이스도 대부분 에뮬레이션된 프로세스 비용(sudo·runguard 각 수십 ms)이라 네이티브에서는 더 줄 것으로 예상 (미측정)
+2. **테스트케이스 병렬 실행** — 한 작업에 CPU·실행 사용자를 여러 개 배정
 
 ## 다음 단계
 
