@@ -28,7 +28,7 @@ backend ──POST /v1/jobs──▶ testrun-service ──XADD testrun:jobs─�
 | 단계 | 동작 |
 |---|---|
 | 접수 (`POST /v1/jobs`) | 토큰 확인 → 코드 64KB 이하 → runner 생존 키 확인 → 미완료 작업 수 확인 → 사용자당 동시 1건 잠금 → **DB 행(QUEUED) 먼저 저장** → 큐 등록 + 소유자 메타를 한 트랜잭션으로 |
-| 실행 (runner) | 큐 대기가 60초를 넘은 작업은 실행하지 않고 `QUEUE_TIMEOUT`. 테스트케이스는 `problemHash` 캐시, 없으면 backend 내부 API. 샘플이 있으면 샘플(입출력 공개), 없으면 secret(판정만). 첫 실패에서 중단 |
+| 실행 (runner) | 큐 대기가 60초를 넘은 작업은 실행하지 않고 `QUEUE_TIMEOUT`. 테스트케이스는 `problemHash` 캐시, 없으면 backend 내부 API. 샘플이 있으면 샘플(입출력 공개), 없으면 secret(판정만). 오답이어도 모든 테스트케이스 실행 (최종 판정은 첫 번째 실패) |
 | 마무리 (runner) | 마지막 이벤트 + 이벤트 TTL + 결과 요약 + 사용자 잠금 해제 + XACK를 **한 MULTI**로 → 화면 결과와 저장 메시지가 함께 생기거나 함께 안 생김 |
 | 저장 (service) | `testrun-persist` group. DB 저장 후에만 XACK, 재시작 시 PEL부터 재처리, `job_id` 기준 멱등 upsert |
 | 장애 | runner가 죽으면 다른(또는 재기동한) runner가 45초 뒤 회수해 `RUNNER_LOST` error로 끝냄 (학생 코드 재실행 안 함). 결과가 끝내 안 오면 120초 뒤 `LOST` |
@@ -84,6 +84,33 @@ docker run --rm -e GRADLE_USER_HOME=/cache -v hcodelab-testrun-gradle:/cache -v 
 | 슬롯 재사용 | runner가 SIGKILL로 죽으면 마운트는 사라져도 chroot 심볼릭 링크가 남아 재기동이 실패했다. 기동 시 `/proc/mounts`로 마운트가 없음을 확인한 뒤에만 슬롯 디렉토리를 새로 만든다 |
 | 시간 제한 인자 | judgehost 9.0.0은 `soft:hard,soft:hard` 형식 (설계 문서의 `1:2`가 아님) |
 | 신호 종료 | 스크립트가 신호로 종료되면(컨테이너 종료 등) `KILLED_BY_SIGNAL`로 기록해 채점 오류와 구분 |
+
+## 속도 분석 (2026-10-15, local-dev Apple Silicon + Rosetta)
+
+학생 API 제출 → 마지막 SSE 이벤트까지, 샘플 3개 문제, 각 5회 중앙값:
+
+| 결과 | 경량 실행기 | 기존 DOMjudge |
+|---|---|---|
+| 정답 (3개 실행) | 4.22초 | 6.77초 |
+| 오답 (모든 테스트케이스 실행으로 변경 후) | 4.35초 | 6.76초 |
+| 컴파일 에러 | 0.70초 | 3.74초 |
+
+정답 4.2초의 내역 (`poc/overhead-bench.sh`, runner 로그 `timing:`):
+
+| 구성 | 시간 | 프로세스 수 |
+|---|---|---|
+| `compile.sh` (gcc 직접은 305ms) | 약 0.9초 | 약 65 |
+| `testcase_run.sh` × 3 (프로그램 실행 11ms + 비교 19ms) | 약 1.1초 × 3 | 약 123씩 |
+| 큐·이벤트 중계·HTTP | 약 0.1초 | |
+
+실제 실행·비교는 테스트케이스당 30ms이고, 나머지는 DOMjudge 셸 스크립트가 테스트케이스마다 띄우는 약 120개의 프로세스
+(grep·sed·sudo·runguard 등) 비용이다. 이 Mac은 amd64 이미지를 에뮬레이션해 프로세스 1개에 7.3ms(네이티브 arm64는 0.35ms)가 든다.
+
+줄이는 방법 (효과가 큰 순):
+1. **운영(amd64 네이티브)에서 재측정** — 프로세스 비용이 에뮬레이션의 1/20 수준이면 코드 변경 없이도 크게 줄어든다 (미측정)
+2. **`testcase_run.sh` 대신 runner가 runguard를 직접 호출** (설계 문서 2-6) — 같은 runguard·같은 비교 프로그램을 쓰므로 판정 일치성은 유지, 테스트케이스당 프로세스 약 120 → 약 4
+3. **테스트케이스 병렬 실행** — 슬롯 CPU 여러 개를 한 작업에 배정
+4. `compile.sh`도 2와 같은 방식으로 직접 호출
 
 ## 다음 단계
 

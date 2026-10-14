@@ -26,7 +26,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * 테스트하기 1건 실행. DOMjudge compile.sh / testcase_run.sh를 judgedaemon과 같은 인자로 직접 호출한다.
- * 첫 실패에서 중단한다 (VERIFY 모드는 전부 실행).
+ * 오답이어도 모든 테스트케이스를 실행한다. 최종 판정은 첫 번째로 실패한 테스트케이스의 결과다.
  */
 @Slf4j
 @Component
@@ -106,13 +106,16 @@ public class JobExecutor {
         double soft = (job.getTimeLimitSec() != null ? job.getTimeLimitSec() : 1.0) * language.getTimeFactor();
         String timeLimit = TimeLimits.argument(soft, TimeLimits.hard(soft, recipe.getOvershoot()));
         boolean sample = set.source() == Enums.TestcaseSource.SAMPLE;
-        boolean stopOnFailure = job.getMode() != Enums.Mode.VERIFY;
         Verdict finalVerdict = Verdict.AC;
         int passed = 0;
         int maxRuntimeMs = 0;
         int maxMemoryKb = 0;
+        StringBuilder timing = new StringBuilder();
 
+        // 오답이어도 모든 테스트케이스를 실행해 학생이 전부 확인할 수 있게 한다.
+        // 최종 판정은 첫 번째로 실패한 테스트케이스의 결과 (DOMjudge results_prio 기본값과 같음).
         for (TestcaseSet.Testcase tc : set.testcases()) {
+            long tcStart = System.currentTimeMillis();
             Path passdir = workdir.resolve(String.format("testcase%05d", tc.rank())).resolve("1");
             Path execdir = passdir.resolve("execdir");
             Files.createDirectories(execdir);
@@ -137,6 +140,8 @@ public class JobExecutor {
             }
 
             RunMeta meta = RunMeta.read(passdir.resolve("program.meta"));
+            timing.append(' ').append(tc.rank()).append(':').append(System.currentTimeMillis() - tcStart)
+                    .append("ms(cpu ").append(meta.runtimeMs()).append("ms)");
             maxRuntimeMs = Math.max(maxRuntimeMs, meta.runtimeMs());
             maxMemoryKb = Math.max(maxMemoryKb, meta.memoryKb());
             summary.getCases().add(new ResultSummary.CaseResult(tc.rank(), verdict, meta.runtimeMs(), meta.memoryKb()));
@@ -144,16 +149,13 @@ public class JobExecutor {
 
             if (verdict == Verdict.AC) {
                 passed++;
-            } else {
-                if (summary.getFirstFailRank() == null) {
-                    summary.setFirstFailRank(tc.rank());
-                    finalVerdict = verdict;
-                }
-                if (stopOnFailure) {
-                    break;
-                }
+            } else if (summary.getFirstFailRank() == null) {
+                summary.setFirstFailRank(tc.rank());
+                finalVerdict = verdict;
             }
         }
+        log.info("job {} timing: compile={}ms testcases[{}]", job.getJobId(),
+                summary.getCompiledAt() - summary.getDequeuedAt(), timing.toString().trim());
 
         summary.setStatus(Enums.JobStatus.DONE);
         summary.setVerdict(finalVerdict);

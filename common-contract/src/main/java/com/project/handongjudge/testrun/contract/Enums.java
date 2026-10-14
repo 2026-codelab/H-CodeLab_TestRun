@@ -11,7 +11,7 @@ public final class Enums {
         ASSIGNMENT, QUIZ
     }
 
-    /** NORMAL: 학생 테스트하기 (첫 실패에서 중단). VERIFY: 일치성 검증 (전부 실행, 통계 제외). */
+    /** NORMAL: 학생 테스트하기. VERIFY: 일치성 검증 (통계 제외). 둘 다 모든 테스트케이스를 실행한다. */
     public enum Mode {
         NORMAL, VERIFY
     }
