@@ -1,0 +1,35 @@
+plugins {
+    id 'org.springframework.boot'
+    id 'io.spring.dependency-management'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+dependencies {
+    implementation project(':common-contract')
+    implementation 'org.springframework.boot:spring-boot-starter'
+    // 웹이 없는 앱에서도 ObjectMapper 빈을 자동 구성
+    implementation 'org.springframework.boot:spring-boot-starter-json'
+    implementation 'io.lettuce:lettuce-core'
+    // 실행파일 zip의 unix 실행 권한 비트를 읽기 위해 (DOMjudge 실행파일 해시 계산에 포함됨)
+    implementation 'org.apache.commons:commons-compress:1.27.1'
+
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+    annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+bootJar {
+    archiveFileName = 'testrun-runner.jar'
+}
+
+jar {
+    enabled = false
+}
