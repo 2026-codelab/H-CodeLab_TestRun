@@ -1,0 +1,34 @@
+server:
+  port: ${PORT:8090}
+
+spring:
+  application:
+    name: testrun-service
+  datasource:
+    url: ${TESTRUN_DB_URL:jdbc:mariadb://localhost:3306/testrun}
+    username: ${TESTRUN_DB_USERNAME:testrun_svc}
+    password: ${TESTRUN_DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: 5
+  flyway:
+    enabled: true
+  jackson:
+    default-property-inclusion: non_null
+
+testrun:
+  service-token: ${TESTRUN_SERVICE_TOKEN:}
+  max-queue-depth: ${TESTRUN_MAX_QUEUE_DEPTH:200}
+  job-timeout-sec: ${TESTRUN_JOB_TIMEOUT_SEC:30}
+  max-queue-wait-sec: ${TESTRUN_MAX_QUEUE_WAIT_SEC:60}
+  reaper-grace-sec: ${TESTRUN_REAPER_GRACE_SEC:30}
+  code-retention-days: ${TESTRUN_CODE_RETENTION_DAYS:365}
+  redis:
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    password: ${REDIS_PASSWORD:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
