@@ -26,7 +26,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * 테스트하기 1건 실행. DOMjudge compile.sh / testcase_run.sh를 judgedaemon과 같은 인자로 직접 호출한다.
- * 첫 실패에서 중단한다 (VERIFY 모드는 전부 실행).
+ * 오답이어도 모든 테스트케이스를 실행한다. 최종 판정은 첫 번째로 실패한 테스트케이스의 결과다.
  */
 @Slf4j
 @Component
@@ -83,7 +83,11 @@ public class JobExecutor {
 
         Map<String, String> env = JudgeEnv.forJob(
                 JudgeEnv.base(properties.getJudgehostRoot(), slot.getRunuser(), recipe.getLimits()), job.getMemoryLimitMb());
-        int rc = ProcessRunner.run(List.of(
+        boolean direct = properties.isDirectJudge();
+        int rc = direct
+                ? DirectJudge.compile(workdir, sourceName, language.getCompile().getRunPath(), slot.getCpu(),
+                        slot.getRunuser(), env, remaining(deadline))
+                : ProcessRunner.run(List.of(
                         slot.getLibJudgeDir().resolve("compile.sh").toString(), "-n", String.valueOf(slot.getCpu()),
                         language.getCompile().getRunPath().toString(), workdir.toString(), sourceName),
                 workdir, env, workdir.resolve("compile.stdout"), remaining(deadline));
@@ -106,24 +110,34 @@ public class JobExecutor {
         double soft = (job.getTimeLimitSec() != null ? job.getTimeLimitSec() : 1.0) * language.getTimeFactor();
         String timeLimit = TimeLimits.argument(soft, TimeLimits.hard(soft, recipe.getOvershoot()));
         boolean sample = set.source() == Enums.TestcaseSource.SAMPLE;
-        boolean stopOnFailure = job.getMode() != Enums.Mode.VERIFY;
         Verdict finalVerdict = Verdict.AC;
         int passed = 0;
         int maxRuntimeMs = 0;
         int maxMemoryKb = 0;
+        StringBuilder timing = new StringBuilder();
 
+        // 오답이어도 모든 테스트케이스를 실행해 학생이 전부 확인할 수 있게 한다.
+        // 최종 판정은 첫 번째로 실패한 테스트케이스의 결과 (DOMjudge results_prio 기본값과 같음).
         for (TestcaseSet.Testcase tc : set.testcases()) {
+            long tcStart = System.currentTimeMillis();
             Path passdir = workdir.resolve(String.format("testcase%05d", tc.rank())).resolve("1");
             Path execdir = passdir.resolve("execdir");
             Files.createDirectories(execdir);
-            linkProgram(workdir.resolve("compile"), execdir);
-
-            rc = ProcessRunner.run(List.of(
-                            slot.getLibJudgeDir().resolve("testcase_run.sh").toString(), "-n", String.valueOf(slot.getCpu()),
-                            tc.input().toString(), tc.answer().toString(), timeLimit, passdir.toString(),
-                            recipe.getRun().getRunPath().toString(), recipe.getCompare().getRunPath().toString(),
-                            job.getCompareArgs() == null ? "" : job.getCompareArgs()),
-                    workdir, env, passdir.getParent().resolve("run.stdout"), remaining(deadline));
+            if (direct) {
+                linkProgramDirect(workdir.resolve("compile"), execdir);
+                String[] limits = timeLimit.split(",");
+                rc = DirectJudge.runTestcase(passdir, tc.input(), tc.answer(), limits[0], limits[1],
+                        recipe.getRun().getRunPath(), recipe.getCompare().getRunPath(), job.getCompareArgs(),
+                        slot.getCpu(), slot.getRunuser(), env, deadline);
+            } else {
+                linkProgram(workdir.resolve("compile"), execdir);
+                rc = ProcessRunner.run(List.of(
+                                slot.getLibJudgeDir().resolve("testcase_run.sh").toString(), "-n", String.valueOf(slot.getCpu()),
+                                tc.input().toString(), tc.answer().toString(), timeLimit, passdir.toString(),
+                                recipe.getRun().getRunPath().toString(), recipe.getCompare().getRunPath().toString(),
+                                job.getCompareArgs() == null ? "" : job.getCompareArgs()),
+                        workdir, env, passdir.getParent().resolve("run.stdout"), remaining(deadline));
+            }
             if (rc == ProcessRunner.TIMED_OUT) {
                 return error(summary, "JOB_TIMEOUT", "testcase " + tc.rank() + " exceeded job timeout");
             }
@@ -137,6 +151,8 @@ public class JobExecutor {
             }
 
             RunMeta meta = RunMeta.read(passdir.resolve("program.meta"));
+            timing.append(' ').append(tc.rank()).append(':').append(System.currentTimeMillis() - tcStart)
+                    .append("ms(cpu ").append(meta.runtimeMs()).append("ms)");
             maxRuntimeMs = Math.max(maxRuntimeMs, meta.runtimeMs());
             maxMemoryKb = Math.max(maxMemoryKb, meta.memoryKb());
             summary.getCases().add(new ResultSummary.CaseResult(tc.rank(), verdict, meta.runtimeMs(), meta.memoryKb()));
@@ -144,16 +160,13 @@ public class JobExecutor {
 
             if (verdict == Verdict.AC) {
                 passed++;
-            } else {
-                if (summary.getFirstFailRank() == null) {
-                    summary.setFirstFailRank(tc.rank());
-                    finalVerdict = verdict;
-                }
-                if (stopOnFailure) {
-                    break;
-                }
+            } else if (summary.getFirstFailRank() == null) {
+                summary.setFirstFailRank(tc.rank());
+                finalVerdict = verdict;
             }
         }
+        log.info("job {} timing: compile={}ms testcases[{}]", job.getJobId(),
+                summary.getCompiledAt() - summary.getDequeuedAt(), timing.toString().trim());
 
         summary.setStatus(Enums.JobStatus.DONE);
         summary.setVerdict(finalVerdict);
@@ -261,6 +274,22 @@ public class JobExecutor {
         int rc = ProcessRunner.run(command, compileDir, Map.of(), null, 30_000);
         if (rc != 0) {
             throw new IOException("could not link program into " + execdir);
+        }
+    }
+
+    /** cp -PRl과 같다 (파일은 하드링크, 심볼릭 링크는 그대로, 디렉토리는 재귀). 프로세스를 띄우지 않는다. */
+    private static void linkProgramDirect(Path compileDir, Path execdir) throws IOException {
+        try (Stream<Path> paths = Files.walk(compileDir)) {
+            for (Path src : paths.filter(p -> !p.equals(compileDir)).toList()) {
+                Path dst = execdir.resolve(compileDir.relativize(src).toString());
+                if (Files.isSymbolicLink(src)) {
+                    Files.createSymbolicLink(dst, Files.readSymbolicLink(src));
+                } else if (Files.isDirectory(src)) {
+                    Files.createDirectories(dst);
+                } else {
+                    Files.createLink(dst, src);
+                }
+            }
         }
     }
 

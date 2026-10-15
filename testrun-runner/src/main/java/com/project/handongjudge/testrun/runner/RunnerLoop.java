@@ -197,6 +197,14 @@ public class RunnerLoop implements SmartLifecycle {
     public void stop() {
         running.set(false);
         ready.set(false);
+        // 생존 신호부터 지운다. 진행 중 작업을 기다리는 동안(최대 jobTimeout+10초) 컨테이너가 먼저 강제 종료될 수 있어,
+        // 마지막에 지우면 TTL(10초) 동안 testrun-service가 멈춘 runner에 작업을 계속 넣는다.
+        try {
+            redis.shared().del(Streams.runner(properties.getId()));
+            Files.deleteIfExists(READY_FILE);
+        } catch (Exception e) {
+            log.warn("heartbeat cleanup failed: {}", e.getMessage());
+        }
         for (Thread t : threads) {
             try {
                 t.join(Duration.ofSeconds(properties.getJobTimeoutSec() + 10).toMillis());
@@ -206,12 +214,6 @@ public class RunnerLoop implements SmartLifecycle {
         }
         for (Slot slot : slots) {
             slot.stop(slotEnv(slot));
-        }
-        try {
-            redis.shared().del(Streams.runner(properties.getId()));
-            Files.deleteIfExists(READY_FILE);
-        } catch (Exception e) {
-            log.warn("cleanup failed: {}", e.getMessage());
         }
         if (reclaimConnection != null) {
             reclaimConnection.close();

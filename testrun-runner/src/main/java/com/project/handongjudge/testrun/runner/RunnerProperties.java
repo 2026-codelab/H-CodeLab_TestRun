@@ -34,6 +34,15 @@ public class RunnerProperties {
      * 학생 화면(SSE)은 이미 연결을 끊었으므로 볼 사람이 없는 코드를 실행하지 않는다.
      */
     private int maxQueueWaitSec = 60;
+    /**
+     * direct: runguard를 직접 호출 (DirectJudge, 테스트케이스당 보조 프로세스 약 120 → 약 8).
+     * script: DOMjudge compile.sh / testcase_run.sh를 그대로 호출 (판정 비교·문제 발생 시 되돌리기용).
+     */
+    private String judgeMode = "direct";
+
+    public boolean isDirectJudge() {
+        return !"script".equalsIgnoreCase(judgeMode);
+    }
     /** 이 시간 이상 확인(XACK)되지 않은 작업은 다른 runner가 회수한다. jobTimeout보다 커야 한다. */
     private long reclaimIdleMs = 45_000;
     /** 언어 ID → DOMjudge 컴파일 실행파일 ID. 내려받은 해시를 언어 API의 compile_executable_hash와 대조한다. */

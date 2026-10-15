@@ -11,6 +11,7 @@ runner:
   runuser-base: ${RUNNER_RUNUSER_BASE:101}
   job-timeout-sec: ${RUNNER_JOB_TIMEOUT_SEC:30}
   max-queue-wait-sec: ${RUNNER_MAX_QUEUE_WAIT_SEC:60}
+  judge-mode: ${RUNNER_JUDGE_MODE:direct}          # direct | script
   redis:
     host: ${REDIS_HOST:localhost}
     port: ${REDIS_PORT:6379}

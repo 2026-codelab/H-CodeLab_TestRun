@@ -28,7 +28,7 @@ backend ──POST /v1/jobs──▶ testrun-service ──XADD testrun:jobs─�
 | 단계 | 동작 |
 |---|---|
 | 접수 (`POST /v1/jobs`) | 토큰 확인 → 코드 64KB 이하 → runner 생존 키 확인 → 미완료 작업 수 확인 → 사용자당 동시 1건 잠금 → **DB 행(QUEUED) 먼저 저장** → 큐 등록 + 소유자 메타를 한 트랜잭션으로 |
-| 실행 (runner) | 큐 대기가 60초를 넘은 작업은 실행하지 않고 `QUEUE_TIMEOUT`. 테스트케이스는 `problemHash` 캐시, 없으면 backend 내부 API. 샘플이 있으면 샘플(입출력 공개), 없으면 secret(판정만). 첫 실패에서 중단 |
+| 실행 (runner) | 큐 대기가 60초를 넘은 작업은 실행하지 않고 `QUEUE_TIMEOUT`. 테스트케이스는 `problemHash` 캐시, 없으면 backend 내부 API. 샘플이 있으면 샘플(입출력 공개), 없으면 secret(판정만). 오답이어도 모든 테스트케이스 실행 (최종 판정은 첫 번째 실패) |
 | 마무리 (runner) | 마지막 이벤트 + 이벤트 TTL + 결과 요약 + 사용자 잠금 해제 + XACK를 **한 MULTI**로 → 화면 결과와 저장 메시지가 함께 생기거나 함께 안 생김 |
 | 저장 (service) | `testrun-persist` group. DB 저장 후에만 XACK, 재시작 시 PEL부터 재처리, `job_id` 기준 멱등 upsert |
 | 장애 | runner가 죽으면 다른(또는 재기동한) runner가 45초 뒤 회수해 `RUNNER_LOST` error로 끝냄 (학생 코드 재실행 안 함). 결과가 끝내 안 오면 120초 뒤 `LOST` |
@@ -85,8 +85,51 @@ docker run --rm -e GRADLE_USER_HOME=/cache -v hcodelab-testrun-gradle:/cache -v 
 | 시간 제한 인자 | judgehost 9.0.0은 `soft:hard,soft:hard` 형식 (설계 문서의 `1:2`가 아님) |
 | 신호 종료 | 스크립트가 신호로 종료되면(컨테이너 종료 등) `KILLED_BY_SIGNAL`로 기록해 채점 오류와 구분 |
 
+## 속도 분석 (2026-10-15, local-dev Apple Silicon + Rosetta)
+
+학생 API 제출 → 마지막 SSE 이벤트까지, 샘플 3개 문제, 각 5회 중앙값:
+
+| 결과 | 경량 실행기 | 기존 DOMjudge |
+|---|---|---|
+| 정답 (3개 실행) | 4.22초 | 6.77초 |
+| 오답 (모든 테스트케이스 실행으로 변경 후) | 4.35초 | 6.76초 |
+| 컴파일 에러 | 0.70초 | 3.74초 |
+
+정답 4.2초의 내역 (`poc/overhead-bench.sh`, runner 로그 `timing:`):
+
+| 구성 | 시간 | 프로세스 수 |
+|---|---|---|
+| `compile.sh` (gcc 직접은 305ms) | 약 0.9초 | 약 65 |
+| `testcase_run.sh` × 3 (프로그램 실행 11ms + 비교 19ms) | 약 1.1초 × 3 | 약 123씩 |
+| 큐·이벤트 중계·HTTP | 약 0.1초 | |
+
+실제 실행·비교는 테스트케이스당 30ms이고, 나머지는 DOMjudge 셸 스크립트가 테스트케이스마다 띄우는 약 120개의 프로세스
+(grep·sed·sudo·runguard 등) 비용이다. 이 Mac은 amd64 이미지를 에뮬레이션해 프로세스 1개에 7.3ms(네이티브 arm64는 0.35ms)가 든다.
+
+### runguard 직접 호출 (DirectJudge, 기본값 `RUNNER_JUDGE_MODE=direct`)
+
+`compile.sh`·`testcase_run.sh`가 하던 일을 같은 runguard 옵션·같은 run/compare 실행파일·같은 결과 판정 순서로
+Java에서 직접 한다. 테스트케이스당 보조 프로세스가 약 120개 → 약 8개(run 스크립트, sudo·runguard ×2, chown)로 준다.
+`RUNNER_JUDGE_MODE=script`로 되돌릴 수 있다.
+
+| 결과 (학생 API, 5회 중앙값) | 기존 DOMjudge | 실행기 script | 실행기 **direct** |
+|---|---|---|---|
+| 정답 (3개) | 6.77초 | 4.22초 | **1.58초** |
+| 오답 (3개 모두 실행) | 6.76초 | 4.35초 | **1.54초** |
+| 컴파일 에러 | 3.74초 | 0.70초 | **0.35초** |
+
+단계별: 컴파일 0.92 → 0.53초 (gcc 자체 0.3초), 테스트케이스 1.13 → 0.33초.
+
+판정 일치성 (`scripts/parity.py`): C·C++·Java·Python, AC·WA·CE·TLE·RTE(segfault, 종료 코드, 메모리 초과)·OLE·NO·공백 차이(엄격 비교 포함)
+17개 사례에서 script와 direct의 테스트케이스별 판정·최종 판정·컴파일 메시지·diff 메시지가 **모두 같음 (불일치 0)**.
+
+남은 개선:
+1. **운영(amd64 네이티브)에서 재측정** — 남은 0.33초/테스트케이스도 대부분 에뮬레이션된 프로세스 비용(sudo·runguard 각 수십 ms)이라 네이티브에서는 더 줄 것으로 예상 (미측정)
+2. **테스트케이스 병렬 실행** — 한 작업에 CPU·실행 사용자를 여러 개 배정
+
 ## 다음 단계
 
-- **3단계 backend 어댑터** (H-CodeLab_BE): `TestRunRouter`(기능 플래그·폴백), 이벤트 dispatcher(SSE 중계), 스트림 소유권 확인, 내부 API `/internal/testrun/problems/{id}/testcases`, `Problem.testcaseHash`
+- **3단계 backend 어댑터** (H-CodeLab_BE `feat/testrun-backend-adapter`): 기능 플래그·폴백, SSE 중계, 스트림 소유권 확인, 내부 테스트케이스 API — local-dev E2E 확인 완료, PR 예정
+  - 테스트케이스 해시는 `Problem.testcaseHash` 컬럼 대신 zip의 sha256을 매번 계산한다 (zip이 문제 조회 시 이미 메모리에 있어 비용이 작고, 컬럼 갱신 누락으로 인한 불일치가 없음)
 - **3.5단계** 통계 API (`/v1/stats/*`)
 - amd64 환경 재측정 (PoC 속도 게이트)
