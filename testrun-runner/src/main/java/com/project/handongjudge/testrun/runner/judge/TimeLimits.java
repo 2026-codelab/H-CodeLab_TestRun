@@ -50,6 +50,11 @@ public final class TimeLimits {
         return soft + overshoot(soft, overshootSpec);
     }
 
+    /** 테스트케이스 1개를 끝내는 데 필요한 최악의 시간(ms): wall hard 한도 + 준비·비교 여유. */
+    public static long worstCaseMs(double hard, long marginMs) {
+        return (long) Math.ceil(hard * 1000) + marginMs;
+    }
+
     /** testcase_run.sh 인자 형식 "cpu_soft:cpu_hard,wall_soft:wall_hard". */
     public static String argument(double soft, double hard) {
         String pair = format(soft) + ":" + format(hard);

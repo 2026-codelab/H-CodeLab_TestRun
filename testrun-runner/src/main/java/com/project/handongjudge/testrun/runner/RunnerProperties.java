@@ -30,6 +30,11 @@ public class RunnerProperties {
     /** 작업 전체 제한 시간. 넘으면 실행 중인 프로세스를 종료하고 error. */
     private int jobTimeoutSec = 30;
     /**
+     * 테스트케이스 1개의 준비·비교 여유. 남은 시간이 (wall hard 한도 + 이 값)보다 짧으면 남은 테스트케이스를 실행하지 않는다.
+     * 시간 초과 코드가 모든 테스트케이스를 돌다가 jobTimeout에 걸려 TLE 대신 오류로 끝나지 않게 한다.
+     */
+    private long testcaseMarginMs = 2000;
+    /**
      * 큐 대기 상한. 이보다 오래 기다린 작업은 실행하지 않고 QUEUE_TIMEOUT으로 끝낸다.
      * 학생 화면(SSE)은 이미 연결을 끊었으므로 볼 사람이 없는 코드를 실행하지 않는다.
      */

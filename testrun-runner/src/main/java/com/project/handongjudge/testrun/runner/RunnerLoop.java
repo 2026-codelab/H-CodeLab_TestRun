@@ -113,6 +113,10 @@ public class RunnerLoop implements SmartLifecycle {
         try (StatefulRedisConnection<String, String> connection = redis.connect()) {
             RedisCommands<String, String> cmd = connection.sync();
             while (running.get()) {
+                if (slot.isDirty() && !slot.killProcesses()) {
+                    sleep(5000);   // 이전 작업의 프로세스가 남은 슬롯에는 새 작업을 넣지 않는다
+                    continue;
+                }
                 try {
                     List<StreamMessage<String, String>> messages = cmd.xreadgroup(consumer,
                             XReadArgs.Builder.block(5000).count(1), XReadArgs.StreamOffset.lastConsumed(Streams.JOBS));
@@ -213,6 +217,7 @@ public class RunnerLoop implements SmartLifecycle {
             }
         }
         for (Slot slot : slots) {
+            slot.killProcesses();   // 남은 프로세스가 chroot 마운트를 잡고 있으면 해제가 실패한다
             slot.stop(slotEnv(slot));
         }
         if (reclaimConnection != null) {

@@ -28,9 +28,10 @@ backend ──POST /v1/jobs──▶ testrun-service ──XADD testrun:jobs─�
 | 단계 | 동작 |
 |---|---|
 | 접수 (`POST /v1/jobs`) | 토큰 확인 → 코드 64KB 이하 → runner 생존 키 확인 → 미완료 작업 수 확인 → 사용자당 동시 1건 잠금 → **DB 행(QUEUED) 먼저 저장** → 큐 등록 + 소유자 메타를 한 트랜잭션으로 |
-| 실행 (runner) | 큐 대기가 60초를 넘은 작업은 실행하지 않고 `QUEUE_TIMEOUT`. 테스트케이스는 `problemHash` 캐시, 없으면 backend 내부 API. 샘플이 있으면 샘플(입출력 공개), 없으면 secret(판정만). 오답이어도 모든 테스트케이스 실행 (최종 판정은 첫 번째 실패) |
+| 실행 (runner) | 큐 대기가 60초를 넘은 작업은 실행하지 않고 `QUEUE_TIMEOUT`. 테스트케이스는 `problemHash` 캐시, 없으면 backend 내부 API. 샘플이 있으면 샘플(입출력 공개), 없으면 secret(판정만). 오답이어도 모든 테스트케이스 실행 (최종 판정은 첫 번째 실패). 단, 남은 시간이 다음 테스트케이스의 최악 소요(wall hard 한도 + 2초)보다 짧으면 멈추고 `complete.skipped`에 실행하지 않은 수를 싣는다 (실행한 것이 모두 정답이면 `JOB_TIMEOUT`) |
 | 마무리 (runner) | 마지막 이벤트 + 이벤트 TTL + 결과 요약 + 사용자 잠금 해제 + XACK를 **한 MULTI**로 → 화면 결과와 저장 메시지가 함께 생기거나 함께 안 생김 |
 | 저장 (service) | `testrun-persist` group. DB 저장 후에만 XACK, 재시작 시 PEL부터 재처리, `job_id` 기준 멱등 upsert |
+| 작업 제한 시간 초과 | 실행 중인 프로세스를 끊고 `JOB_TIMEOUT`. 워커는 root(sudo·runguard)·runuser 프로세스에 신호를 보낼 권한이 없어, 슬롯 실행 사용자별로 sudoers에 등록한 `pkill -KILL -u domjudge-run-N`으로 정리한다. 남아 있으면 그 슬롯은 정리될 때까지 새 작업을 받지 않음 |
 | 장애 | runner가 죽으면 다른(또는 재기동한) runner가 45초 뒤 회수해 `RUNNER_LOST` error로 끝냄 (학생 코드 재실행 안 함). 결과가 끝내 안 오면 120초 뒤 `LOST` |
 
 판정 정합성: 접수 건수 = DONE + ERROR + LOST.

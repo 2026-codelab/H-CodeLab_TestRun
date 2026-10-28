@@ -10,6 +10,7 @@ runner:
   cpus: ${RUNNER_CPUS:1,2}
   runuser-base: ${RUNNER_RUNUSER_BASE:101}
   job-timeout-sec: ${RUNNER_JOB_TIMEOUT_SEC:30}
+  testcase-margin-ms: ${RUNNER_TESTCASE_MARGIN_MS:2000}
   max-queue-wait-sec: ${RUNNER_MAX_QUEUE_WAIT_SEC:60}
   judge-mode: ${RUNNER_JUDGE_MODE:direct}          # direct | script
   redis:
