@@ -1,12 +1,13 @@
 # DOMjudge 연동 정리 — 테스트하기 경량 실행기
 
-경량 실행기(testrun)가 DOMjudge의 무엇을 쓰는지, 테스트하기를 누르면 무슨 일이 일어나는지, DOMjudge 버전을 올릴 때 무엇을 해야 하는지 정리한다.
+경량 실행기(testrun)가 DOMjudge의 무엇을 쓰는지, 테스트하기를 누르면 무슨 일이 일어나는지, 원래 방식(DOMjudge 경로)은 왜 오래 걸렸는지, DOMjudge 버전을 올릴 때 무엇을 해야 하는지 정리한다.
 (기준: 2026-10-28, runner `FROM domjudge/judgehost:9.0.0`, local-dev domserver `domjudge/domserver:9.0.0`)
 
 ## 한눈에
 
 - runner는 DOMjudge **공식 REST API 3개**만 호출한다. 모두 읽기 전용이고, **기동할 때와 1시간마다** 채점 레시피(한도, 언어 설정, 컴파일·실행·비교 실행파일)를 받을 때만 쓴다. **테스트하기 1건을 처리하는 동안 domserver 호출은 0번이다.**
 - DOMjudge **커스텀 API**(`/judgements/{id}/output`)는 testrun이 호출하지 않는다. 경량 실행기를 쓸 수 없을 때 backend가 넘어가는 **기존 DOMjudge 경로(폴백)**에서 쓴다.
+- 원래 방식(DOMjudge 경로)에서 학생 코드 실행은 판정 시간의 약 5%였다. 나머지는 큐 대기, judging마다의 준비·보고, 셸 스크립트, backend 폴링 비용이었다 (3장).
 - 학생 코드는 judgehost 이미지에 들어 있는 DOMjudge 도구(`runguard`, chroot, 컴파일·실행·비교 실행파일)로 실행한다. 이 도구들은 API가 아니라 **파일·명령행 규약**으로 묶여 있어서, 버전을 올릴 때 가장 주의해야 할 부분이다.
 
 ---
@@ -182,9 +183,107 @@ runner가 하나도 살아 있지 않으면(생존 키 없음) 503 `NO_RUNNER`�
 
 ---
 
-## 3. DOMjudge 버전을 올릴 때
+## 3. 원래 방식(DOMjudge 경로)은 왜 오래 걸렸나
 
-### 3.1 무엇이 버전에 묶여 있나
+경량 실행기 전에는 테스트하기도 **정식 제출과 똑같이** DOMjudge 채점 파이프라인을 탔다. 지금도 경량 실행기를 쓸 수 없을 때(폴백)는 이 경로로 처리된다.
+코드: BE `SubmissionService.submitCodeForTestAsync`(DOMjudge 분기), `TestOutputPollingTask`, `DomjudgeService.submitCode` / `getResultOutput`, DOMjudge `judge/judgedaemon.main.php`
+
+### 3.1 순서대로
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor ST as 학생 (프론트엔드)
+    participant BE as backend
+    participant DS as domserver
+    participant DDB as DOMjudge DB
+    participant JH as judgehost (judgedaemon)
+
+    ST->>BE: POST /api/submissions/test/submit
+    BE->>DS: POST /contests/{cid}/submissions (학생 팀의 실제 제출로 등록)
+    DS->>DDB: submission · judging · 테스트케이스별 judgetask 기록
+    DS-->>BE: 제출 번호
+    BE-->>ST: sessionKey = 제출 번호
+    ST->>BE: GET /test/stream/{제출 번호} (SSE 연결)
+    Note over BE: 이때부터 결과 폴링 시작<br/>0 → 0.5 → 1.5 → 3.5 → 6.5 → 9.5초 …
+
+    Note over JH: ⏳ 큐 대기 (평균 0.71초)<br/>일이 없으면 fetch-work 간격을 0.1초에서 최대 5초까지 늘리며 쉼
+    JH->>DS: fetch-work (작업 있나?)
+    DS-->>JH: judgetask
+    Note over JH,DS: ⏳ 시작 고정비용 (약 1.0초)<br/>버전 확인, 소스·실행파일·테스트케이스 받기, chroot 마운트,<br/>compile.sh (실제 컴파일은 0.1초), 컴파일 결과 보고
+    loop 테스트케이스마다 (secret 포함 전부, 평균 7.9개)
+        Note over JH: ⏳ 테스트케이스당 약 0.25초<br/>testcase_run.sh: 보조 프로세스 약 120개, runguard 2회<br/>(학생 코드 실행 자체는 0.01~0.04초)
+        JH->>DS: 결과 보고 (출력 base64 인코딩, HTTP POST)
+        DS->>DDB: judging_run · 출력 기록
+    end
+
+    loop 폴링할 때마다
+        BE->>DS: GET /judgements?submission_id=
+        BE->>DS: GET /judgements/{id}/output (커스텀 API)
+        DS-->>BE: 지금까지 끝난 테스트케이스
+    end
+    Note over BE: ⏳ 결과 발견 지연<br/>채점이 3.6초에 끝나도 다음 폴링(6.5초)에야 알게 됨
+    BE-->>ST: SSE testcase … complete (폴링한 시점에 몰아서)
+```
+
+### 3.2 시간이 어디서 들었나
+
+```mermaid
+flowchart LR
+    subgraph OLD["원래 방식 — 운영 평균, 정답 기준"]
+        direction LR
+        O1["제출 접수<br/>0.2초"] --> O2["⏳ 큐 대기<br/>0.71초<br/>(judgehost 유휴 백오프)"]
+        O2 --> O3["⏳ 시작 고정비용<br/>약 1.0초<br/>(컴파일은 0.1초)"]
+        O3 --> O4["⏳ 테스트케이스<br/>0.25초 × 7.9개<br/>(실행은 0.01초)"]
+        O4 --> O5["⏳ 폴링으로 발견<br/>0 ~ 3초 추가"]
+    end
+    subgraph NEW["경량 실행기"]
+        direction LR
+        N1["접수<br/>Redis 큐"] --> N2["즉시 꺼냄<br/>(대기하는 슬롯이 바로 받음)"]
+        N2 --> N3["컴파일만"]
+        N3 --> N4["테스트케이스<br/>runguard 실행·비교만<br/>(샘플이 있으면 샘플만)"]
+        N4 --> N5["끝날 때마다<br/>바로 화면으로"]
+    end
+```
+
+| 원인 | 원래 방식에서 드는 시간 | 왜 생기나 | 경량 실행기에서 |
+|---|---|---|---|
+| **큐 대기** | 평균 0.71초, 피크 P95 1.1~1.5초 | judgedaemon이 일이 없으면 fetch-work 간격을 0.1초 → 최대 5초로 늘린다(`INITIAL_WAITTIME_SEC`, `MAXIMAL_WAITTIME_SEC`). 한가할수록 오래 기다린다 | **없음.** 빈 슬롯이 Redis에서 블로킹 읽기로 기다리다 바로 받음 |
+| **시작 고정비용** | 약 1.0초 (컴파일 0.1초 포함) | 작업 배정, 버전 확인 2회, 파일 받기, judging마다 chroot 마운트·해제, 컴파일 결과 HTTP 보고 | 컴파일만 남음. 레시피·테스트케이스는 캐시, chroot는 슬롯을 시작할 때 1번만 마운트 |
+| **테스트케이스당 비용** | 약 0.25초 × 평균 7.9개 | `testcase_run.sh`가 띄우는 보조 프로세스 약 120개 + 출력 base64 인코딩 + 테스트케이스마다 HTTP 보고 + DB 기록. 학생 코드 실행은 0.01~0.04초뿐 | HTTP 보고·DB 기록·인코딩 없음. direct 모드는 셸 스크립트 대신 runguard를 직접 불러 보조 프로세스 약 120개 → 약 8개 |
+| **실행하는 테스트케이스 수** | secret 포함 전부 | 정식 채점과 같은 문제 설정을 쓰기 때문 | 샘플이 있으면 샘플만 |
+| **결과 발견 지연** | 0~3초 (계단식) | backend가 0.5초에서 시작해 최대 3초 간격으로 DOMjudge에 물어본다. 한 번 물을 때마다 HTTP 2회. 채점이 끝나도 다음 폴링까지 모른다 | **없음.** runner가 이벤트를 쓰면 backend가 블로킹 읽기로 바로 받아 SSE로 보냄 |
+| **부수 효과** | — | 테스트하기가 대회의 제출·판정 기록으로 쌓이고, 정식 제출과 같은 judgehost를 나눠 씀 | DOMjudge에 기록이 남지 않음. 정식 채점과 실행 자원을 따로 씀 |
+
+학생 코드를 실제로 컴파일·실행하는 데 드는 시간은 판정 시간의 약 5%다. **나머지 95%는 채점 파이프라인의 대기·보고·셸 스크립트 비용**이었다(운영 2주 9,730건 측정, `docs/JUDGING_PHASE0_MEASUREMENT.md` 측정 ②).
+
+### 3.3 숫자로 비교
+
+운영 측정 (2026-10-08, 원래 방식):
+
+| 구간 | 시간 |
+|---|---|
+| 제출 접수 | 약 0.21초 |
+| 큐 대기 | 평균 0.71초 |
+| 판정 (정답 기준) | 평균 2.48초. 시작 고정비용 1.07초 + 테스트케이스당 0.215초 × 평균 7.9개를 judgehost 1.6대가 나눠 처리(한가할 때 judgehost 하나에 최대 5개씩 배정) |
+| 결과 발견 (폴링) | 0~3초. 예: 채점이 3.2초에 끝나면 3.5초 폴링에서, 3.6초에 끝나면 6.5초 폴링에서 발견 |
+| **합계 (학생 체감)** | **약 3.5~6.5초** |
+
+local-dev에서 같은 코드로 잰 값 (Apple Silicon 에뮬레이션, 샘플 3개 문제, 5회 중앙값):
+
+| 결과 | 원래 방식 | 경량 실행기 (script 모드) | 경량 실행기 (**direct 모드**, 기본값) |
+|---|---|---|---|
+| 정답 (3개 실행) | 6.77초 | 4.22초 | **1.58초** |
+| 오답 (3개 모두 실행) | 6.76초 | 4.35초 | **1.54초** |
+| 컴파일 에러 | 3.74초 | 0.70초 | **0.35초** |
+
+에뮬레이션 환경이라 프로세스를 띄우는 비용이 실제(amd64)보다 약 20배 크다. 운영에서는 세 방식 모두 더 빠르겠지만, 원래 방식에서 고정으로 드는 큐 대기와 폴링 지연은 그대로 남는다. 경량 실행기를 운영 환경에서 다시 측정하는 작업은 아직 남아 있다(README "남은 개선").
+
+---
+
+## 4. DOMjudge 버전을 올릴 때
+
+### 4.1 무엇이 버전에 묶여 있나
 
 | # | 항목 | testrun 쪽 위치 | DOMjudge 원본 | 바뀌면 생기는 일 |
 |---|---|---|---|---|
@@ -206,7 +305,7 @@ runner가 하나도 살아 있지 않으면(생존 키 없음) 503 `NO_RUNNER`�
 
 **해시 대조만으로는 버전 차이를 막지 못한다.** 내려받은 zip과 언어 API의 해시가 둘 다 같은 domserver에서 오기 때문에, domserver만 새 버전이고 runner 이미지가 옛 버전이어도 대조는 통과한다. runner 이미지 버전은 사람이 맞춰야 한다.
 
-### 3.2 절차
+### 4.2 절차
 
 **0. 버전을 함께 올린다.** domserver, 운영 judgehost, runner 이미지는 항상 같은 버전을 쓴다(설계 문서 8장: amd64 이미지, arm64 금지).
 
@@ -286,7 +385,7 @@ runner는 1시간마다 domserver에서 레시피를 다시 받는다. 옛 runne
 
 **10. 문서를 갱신한다.** 이 문서 맨 위 기준 버전, README, 설계 문서의 버전 표기, `poc/README.md`의 호출 규약 표.
 
-### 3.3 되돌리기
+### 4.3 되돌리기
 
 | 증상 | 조치 |
 |---|---|
