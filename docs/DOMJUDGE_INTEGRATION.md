@@ -188,7 +188,78 @@ runner가 하나도 살아 있지 않으면(생존 키 없음) 503 `NO_RUNNER`�
 경량 실행기 전에는 테스트하기도 **정식 제출과 똑같이** DOMjudge 채점 파이프라인을 탔다. 지금도 경량 실행기를 쓸 수 없을 때(폴백)는 이 경로로 처리된다.
 코드: BE `SubmissionService.submitCodeForTestAsync`(DOMjudge 분기), `TestOutputPollingTask`, `DomjudgeService.submitCode` / `getResultOutput`, DOMjudge `judge/judgedaemon.main.php`
 
-### 3.1 순서대로
+### 3.1 구조도 — 테스트하기 1건이 지나가는 길
+
+```mermaid
+flowchart TB
+    U(["학생 브라우저<br/>(ExecutionResult 화면)"])
+
+    subgraph HCL["H-CodeLab backend (Spring Boot)"]
+        direction TB
+        C1["SubmissionController<br/>POST /test/submit<br/>GET /test/stream/{제출 번호}"]
+        S1["SubmissionService<br/>.submitCodeForTestAsync"]
+        DJS["DomjudgeService<br/>submitCode · getResultOutput"]
+        P1["TestOutputPollingTask<br/>(@Async sseExecutor 스레드 1개 점유)<br/>0.5 → 1 → 2 → 3초 간격 폴링, 최대 50초"]
+        SSE["TestOutputSseService<br/>(sessionKey별 SseEmitter)"]
+    end
+
+    subgraph DSV["domserver (DOMjudge 웹 + REST API)"]
+        direction TB
+        API1["대회 API<br/>POST /contests/{cid}/submissions<br/>GET /contests/{cid}/judgements?submission_id=<br/>GET /contests/{cid}/judgements/{id}/output (커스텀)"]
+        API2["judgehost API<br/>POST /judgehosts/fetch-work<br/>GET /judgehosts/get_files · /executables<br/>PUT /judgehosts/update-judging (컴파일 결과)<br/>POST /judgehosts/add-judging-run (테스트케이스 결과)"]
+        Q["판정 큐<br/>QueueTask → JudgeTask<br/>(테스트케이스 1개 = JudgeTask 1개)"]
+        DDB[("DOMjudge DB<br/>submission · submission_file<br/>judging · judgetask<br/>judging_run · judging_run_output")]
+    end
+
+    subgraph JHS["judgehost × 14 (컨테이너 9 + domserver 안 judgedaemon 5)"]
+        direction TB
+        JD["judgedaemon.main.php<br/>fetch-work 폴링 루프<br/>(일 없으면 0.1초 → 최대 5초 대기)"]
+        WD["judging 작업 디렉토리<br/>소스 · 테스트케이스 · 실행파일 캐시<br/>chroot 마운트 (judging마다)"]
+        CS["compile.sh<br/>→ runguard → 컴파일 실행파일 (gcc · javac …)"]
+        TR["testcase_run.sh (테스트케이스마다)<br/>→ runguard → 학생 프로그램<br/>→ runguard → compare<br/>(보조 프로세스 약 120개)"]
+    end
+
+    U -- "① 테스트하기" --> C1
+    C1 --> S1
+    S1 --> DJS
+    DJS -- "② 실제 제출로 등록" --> API1
+    API1 --> DDB
+    API1 -- "③ 판정 작업 생성" --> Q
+    S1 -. "sessionKey = 제출 번호" .-> U
+    U -- "④ SSE 연결" --> C1
+    C1 --> P1
+
+    JD -- "⑤ 일 있나? (폴링)" --> API2
+    Q -. "JudgeTask 배정" .-> API2
+    API2 -- "⑥ 소스 · 테스트케이스 · 실행파일" --> WD
+    JD --> WD
+    WD --> CS
+    CS -- "⑦ 컴파일 결과 보고" --> API2
+    CS --> TR
+    TR -- "⑧ 테스트케이스마다 결과 보고<br/>(출력 base64 인코딩, HTTP)" --> API2
+    API2 --> DDB
+
+    P1 -- "⑨ 결과 나왔나? (폴링마다 HTTP 2회)" --> DJS
+    DJS --> API1
+    API1 -. "DB에서 조회" .-> DDB
+    P1 -- "⑩ 찾은 결과를 몰아서" --> SSE
+    SSE -- "SSE testcase · complete" --> U
+```
+
+| 번호 | 하는 일 | 걸리는 시간 (운영 평균) |
+|---|---|---|
+| ① ② | backend가 학생 코드를 학생 팀의 **실제 제출**로 DOMjudge에 등록. 정식 제출과 같은 API | 약 0.2초 |
+| ③ | domserver가 submission · judging을 만들고, 테스트케이스마다 JudgeTask를 만들어 판정 큐에 넣음 | (②에 포함) |
+| ④ | 학생이 제출 번호로 SSE 연결. 이때 backend가 폴링 스레드를 하나 띄움 | — |
+| ⑤ | judgehost 14대가 각자 domserver에 "일 있나?"를 반복해서 물음. 한가하면 묻는 간격이 최대 5초까지 늘어남 | **큐 대기 0.71초** |
+| ⑥ ⑦ | 일을 받은 judgehost가 파일을 받고, chroot를 마운트하고, 컴파일한 뒤 결과를 보고 | **시작 고정비용 약 1.0초** (컴파일 0.1초) |
+| ⑧ | 테스트케이스마다 셸 스크립트 → runguard로 실행·비교 → 결과를 HTTP로 보고 → DB 기록. 테스트케이스가 많으면 judgehost 여러 대가 나눠 처리 | **테스트케이스당 약 0.25초** (실행 0.01~0.04초) |
+| ⑨ | backend가 domserver에 결과를 물음. 판정 조회와 커스텀 `/output` API, 두 번씩 | **발견 지연 0~3초** |
+| ⑩ | 폴링에서 찾은 테스트케이스 결과를 SSE로 보냄. 모두 끝났으면 complete | — |
+
+**정식 제출과 똑같다**는 것은 ②~⑧이 정식 제출과 같은 API, 같은 판정 큐, 같은 judgehost를 쓴다는 뜻이다. 차이는 결과를 보여주는 방식(⑨⑩)뿐이다. 그래서 테스트하기도 대회의 제출·판정 기록으로 쌓이고, 정식 제출과 judgehost를 나눠 쓴다.
+
+### 3.2 순서대로 (시간 흐름)
 
 ```mermaid
 sequenceDiagram
@@ -226,7 +297,7 @@ sequenceDiagram
     BE-->>ST: SSE testcase … complete (폴링한 시점에 몰아서)
 ```
 
-### 3.2 시간이 어디서 들었나
+### 3.3 시간이 어디서 들었나
 
 ```mermaid
 flowchart LR
@@ -257,7 +328,7 @@ flowchart LR
 
 학생 코드를 실제로 컴파일·실행하는 데 드는 시간은 판정 시간의 약 5%다. **나머지 95%는 채점 파이프라인의 대기·보고·셸 스크립트 비용**이었다(운영 2주 9,730건 측정, `docs/JUDGING_PHASE0_MEASUREMENT.md` 측정 ②).
 
-### 3.3 숫자로 비교
+### 3.4 숫자로 비교
 
 운영 측정 (2026-10-08, 원래 방식):
 
