@@ -20,12 +20,19 @@ cp /etc/resolv.conf /chroot/domjudge/etc/resolv.conf
 
 echo "[..] Creating run users"
 getent group domjudge-run >/dev/null || groupadd -g 62860 domjudge-run
+# 작업 제한 시간 초과 시 워커가 슬롯 실행 사용자의 남은 프로세스(runguard 아래 학생 프로그램 등)를 종료할 수 있게 한다.
+# 워커(domjudge)는 root·runuser 프로세스에 신호를 보낼 권한이 없다. 슬롯 사용자별로 정확한 명령만 허용한다.
+SUDOERS_FILE=/etc/sudoers.d/testrun-runner
+: > "$SUDOERS_FILE"
 for i in $(seq 0 $((RUNNER_SLOTS - 1))); do
   user="domjudge-run-$((RUNNER_RUNUSER_BASE + i))"
   if ! id "$user" >/dev/null 2>&1; then
     useradd -u $((RUNNER_UID_BASE + RUNNER_RUNUSER_BASE + i)) -N -d /nonexistent -g nogroup -s /bin/false "$user" 2>/dev/null
   fi
+  echo "domjudge ALL=(root) NOPASSWD: /usr/bin/pkill -KILL -u $user" >> "$SUDOERS_FILE"
 done
+chmod 0440 "$SUDOERS_FILE"
+visudo -cf "$SUDOERS_FILE" >/dev/null
 
 mkdir -p "$WORK_ROOT" "$WORK_ROOT/testcases"
 chown domjudge: "$WORK_ROOT" "$WORK_ROOT/testcases"   # testcases는 볼륨으로 마운트될 수 있다 (재기동해도 캐시 유지)

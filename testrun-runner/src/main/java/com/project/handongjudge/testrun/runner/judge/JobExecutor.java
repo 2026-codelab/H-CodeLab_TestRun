@@ -93,10 +93,10 @@ public class JobExecutor {
                 workdir, env, workdir.resolve("compile.stdout"), remaining(deadline));
         summary.setCompiledAt(System.currentTimeMillis());
         if (rc == ProcessRunner.TIMED_OUT) {
-            return error(summary, "JOB_TIMEOUT", "compile exceeded job timeout");
+            return timedOut(summary, slot, "compile exceeded job timeout");
         }
         if (rc > 128) {
-            return killed(summary, "compile", rc);
+            return killed(summary, slot, "compile", rc);
         }
         if (rc != 0) {
             String meta = readLimited(workdir.resolve("compile.meta"), 4096);
@@ -108,7 +108,9 @@ public class JobExecutor {
 
         // 테스트케이스 실행
         double soft = (job.getTimeLimitSec() != null ? job.getTimeLimitSec() : 1.0) * language.getTimeFactor();
-        String timeLimit = TimeLimits.argument(soft, TimeLimits.hard(soft, recipe.getOvershoot()));
+        double hard = TimeLimits.hard(soft, recipe.getOvershoot());
+        String timeLimit = TimeLimits.argument(soft, hard);
+        long worstCaseMs = TimeLimits.worstCaseMs(hard, properties.getTestcaseMarginMs());
         boolean sample = set.source() == Enums.TestcaseSource.SAMPLE;
         Verdict finalVerdict = Verdict.AC;
         int passed = 0;
@@ -118,7 +120,11 @@ public class JobExecutor {
 
         // 오답이어도 모든 테스트케이스를 실행해 학생이 전부 확인할 수 있게 한다.
         // 최종 판정은 첫 번째로 실패한 테스트케이스의 결과 (DOMjudge results_prio 기본값과 같음).
+        // 단, 다음 테스트케이스를 끝낼 시간이 남지 않으면 거기서 멈춘다 (시간 초과 코드가 jobTimeout에 걸리지 않게).
         for (TestcaseSet.Testcase tc : set.testcases()) {
+            if (deadline - System.currentTimeMillis() < worstCaseMs) {
+                break;
+            }
             long tcStart = System.currentTimeMillis();
             Path passdir = workdir.resolve(String.format("testcase%05d", tc.rank())).resolve("1");
             Path execdir = passdir.resolve("execdir");
@@ -139,10 +145,10 @@ public class JobExecutor {
                         workdir, env, passdir.getParent().resolve("run.stdout"), remaining(deadline));
             }
             if (rc == ProcessRunner.TIMED_OUT) {
-                return error(summary, "JOB_TIMEOUT", "testcase " + tc.rank() + " exceeded job timeout");
+                return timedOut(summary, slot, "testcase " + tc.rank() + " exceeded job timeout");
             }
             if (rc > 128) {
-                return killed(summary, "testcase " + tc.rank(), rc);
+                return killed(summary, slot, "testcase " + tc.rank(), rc);
             }
             Verdict verdict = Verdict.fromExitCode(rc);
             if (verdict == Verdict.ERR) {
@@ -168,13 +174,26 @@ public class JobExecutor {
         log.info("job {} timing: compile={}ms testcases[{}]", job.getJobId(),
                 summary.getCompiledAt() - summary.getDequeuedAt(), timing.toString().trim());
 
+        int skipped = set.testcases().size() - summary.getCases().size();
+        if (skipped > 0 && summary.getFirstFailRank() == null) {
+            // 실행한 테스트케이스는 모두 맞았지만 나머지를 실행할 시간이 없다. 정답이라고 할 수 없다.
+            return error(summary, "JOB_TIMEOUT", "time budget exhausted after " + summary.getCases().size()
+                    + " of " + set.testcases().size() + " testcases");
+        }
+        if (skipped > 0) {
+            log.info("job {} skipped {} testcase(s): not enough time left", job.getJobId(), skipped);
+        }
+
         summary.setStatus(Enums.JobStatus.DONE);
         summary.setVerdict(finalVerdict);
         summary.setTcPassed(passed);
         summary.setMaxRuntimeMs(maxRuntimeMs);
         summary.setMaxMemoryKb(maxMemoryKb);
         summary.setFinishedAt(System.currentTimeMillis());
-        return new JobOutcome(EventType.COMPLETE, timing(summary, Map.of("result", finalVerdict.name())), summary);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("result", finalVerdict.name());
+        data.put("skipped", skipped);   // 시간이 없어 실행하지 않은 테스트케이스 수 (total 이벤트의 count - 받은 testcase 이벤트 수)
+        return new JobOutcome(EventType.COMPLETE, timing(summary, data), summary);
     }
 
     /**
@@ -209,8 +228,15 @@ public class JobExecutor {
     /**
      * DOMjudge 스크립트가 신호로 종료됨 (예: 143 = SIGTERM, 컨테이너 종료 시). 채점 오류와 구분해 통계가 왜곡되지 않게 한다.
      */
-    private JobOutcome killed(ResultSummary summary, String stage, int rc) {
+    private JobOutcome killed(ResultSummary summary, Slot slot, String stage, int rc) {
+        slot.killProcesses();
         return error(summary, "KILLED_BY_SIGNAL", stage + " killed by signal " + (rc - 128));
+    }
+
+    /** 작업 제한 시간 초과. 워커가 종료하지 못한 runguard·학생 프로그램이 남아 있을 수 있어 슬롯을 정리한다. */
+    private JobOutcome timedOut(ResultSummary summary, Slot slot, String detail) {
+        slot.killProcesses();
+        return error(summary, "JOB_TIMEOUT", detail);
     }
 
     private JobOutcome error(ResultSummary summary, String code, String detail) {

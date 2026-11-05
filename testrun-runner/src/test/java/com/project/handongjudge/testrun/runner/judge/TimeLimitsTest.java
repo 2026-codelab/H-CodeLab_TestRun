@@ -20,6 +20,12 @@ class TimeLimitsTest {
     }
 
     @Test
+    void worstCaseIsHardLimitPlusMargin() {
+        assertEquals(4000, TimeLimits.worstCaseMs(2.0, 2000));
+        assertEquals(3651, TimeLimits.worstCaseMs(1.6501, 2000));
+    }
+
+    @Test
     void argumentMatchesTestcaseRunFormat() {
         assertEquals("1:2,1:2", TimeLimits.argument(1.0, 2.0));
         assertEquals("1.5:2.5,1.5:2.5", TimeLimits.argument(1.5, 2.5));
