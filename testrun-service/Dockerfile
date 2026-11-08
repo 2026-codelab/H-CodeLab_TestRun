@@ -3,7 +3,7 @@
 FROM --platform=$BUILDPLATFORM gradle:8.10.2-jdk17 AS build
 WORKDIR /src
 COPY . .
-RUN ./gradlew :testrun-service:bootJar --no-daemon -q
+RUN gradle :testrun-service:bootJar --no-daemon -q
 
 FROM eclipse-temurin:17-jre
 WORKDIR /opt/app
