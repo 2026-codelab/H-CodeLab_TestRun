@@ -6,7 +6,7 @@
 FROM --platform=$BUILDPLATFORM gradle:8.10.2-jdk17 AS build
 WORKDIR /src
 COPY . .
-RUN ./gradlew :testrun-runner:bootJar --no-daemon -q
+RUN gradle :testrun-runner:bootJar --no-daemon -q
 
 FROM domjudge/judgehost:9.0.0
 # 베이스 이미지에 JRE(21)가 들어 있다. ENTRYPOINT(dumb-init)는 그대로 쓴다.
